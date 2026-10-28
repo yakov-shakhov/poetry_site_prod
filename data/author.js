@@ -1,6 +1,6 @@
 window.AUTHOR = {
   name: "Яков Шахов",
-  photo: "assets/photo.jpg",
+  photo: "assets/photo.png",
   bio: "поэт, кандидат физико-математических наук.",
   links: {
     stihi: "https://stihi.ru/avtor/yakovshakhov",

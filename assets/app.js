@@ -48,12 +48,60 @@
     return m ? m[1] : String(d || "");
   }
 
-  /* Короткая выдержка: первые строки стихотворения. */
-  function excerpt(text) {
+  /* Нормализация для поиска: нижний регистр и ё → е (замена 1:1,
+     индексы не сдвигаются — можно сопоставлять с исходной строкой). */
+  function normText(s) {
+    return String(s == null ? "" : s).toLowerCase().replace(/ё/g, "е");
+  }
+
+  /* Подсветка вхождений nq в строку: esc-безопасно, <mark> вокруг совпадений. */
+  function highlightHtml(str, nq) {
+    var ns = normText(str);
+    var html = "", pos = 0, i;
+    while ((i = ns.indexOf(nq, pos)) !== -1) {
+      html += esc(str.slice(pos, i)) + "<mark>" + esc(str.slice(i, i + nq.length)) + "</mark>";
+      pos = i + nq.length;
+    }
+    return html + esc(str.slice(pos));
+  }
+
+  /* Выдержка на карточке. При активном поиске — фрагмент текста
+     вокруг первого совпадения, иначе первые строки. */
+  function excerptHtml(text, nq) {
     var lines = String(text || "").split("\n").filter(function (l) { return l.trim(); });
-    var s = lines.slice(0, 3).join(" ");
-    if (s.length > 130) s = s.slice(0, 130).replace(/\s+\S*$/, "") + "…";
-    return s;
+    var joined = lines.join(" ");
+    if (!nq) {
+      var s = joined.slice(0, 130);
+      if (s.length < joined.length) s = s.replace(/\s+\S*$/, "") + "…";
+      return esc(s);
+    }
+    var idx = normText(joined).indexOf(nq);
+    if (idx === -1) {
+      s = joined.slice(0, 130);
+      if (s.length < joined.length) s = s.replace(/\s+\S*$/, "") + "…";
+      return esc(s);
+    }
+    var start = Math.max(0, idx - 55);
+    if (start > 0) {
+      var w = joined.lastIndexOf(" ", start);
+      start = w === -1 ? 0 : w + 1;
+    }
+    var end = Math.min(joined.length, idx + nq.length + 80);
+    if (end < joined.length) {
+      var w2 = joined.indexOf(" ", end);
+      end = w2 === -1 ? joined.length : w2;
+    }
+    var frag = joined.slice(start, end);
+    return (start > 0 ? "… " : "") + highlightHtml(frag, nq) + (end < joined.length ? " …" : "");
+  }
+
+  /* Фильтр списка: рубрика + нормализованный поисковый запрос. */
+  function filterPoems(all, genre, nq) {
+    return all.filter(function (p) {
+      if (genre && normGenre(p.genre) !== genre) return false;
+      if (!nq) return true;
+      return normText(p.title + " " + p.text).indexOf(nq) !== -1;
+    });
   }
 
   /* Ссылка на список с сохранением параметров; page >= 2 добавляется явно. */
@@ -65,26 +113,83 @@
     return "#poems" + (parts.length ? "?" + parts.join("&") : "");
   }
 
-  /* Чипсы рубрик. На мобильных видны первые, остальные открывает
-     кнопка «ещё …» (класс expanded вешается на контейнер). */
-  var CHIPS_VISIBLE = 9; /* вместе с «все» */
-  function chipsHtml(q, genre, genres) {
-    var html = '<a href="' + listHref(q, "", 1) + '"' + (genre ? "" : ' class="active"') + '>все</a>';
+  /* Чипсы рубрик: по популярности (убывание числа стихов), при равенстве —
+     по алфавиту. На мобильных видны первые три, остальные открывает
+     кнопка «Ещё N жанров» (класс expanded вешается на контейнер). */
+  var CHIPS_VISIBLE = 4; /* вместе с «все» */
+  /* «1 жанр / 2 жанра / 5 жанров» для кнопки «Ещё N …» */
+  function plural(n, one, few, many) {
+    var n10 = n % 10, n100 = n % 100;
+    if (n10 === 1 && n100 !== 11) return one;
+    if (n10 >= 2 && n10 <= 4 && (n100 < 10 || n100 >= 20)) return few;
+    return many;
+  }
+  function chipsHtml(q, genre, genres, counts) {
+    var html = '<a href="' + listHref(q, "", 1) + '"' +
+      (genre ? "" : ' class="active" aria-current="true"') + '>все</a>';
     var hidden = 0;
     genres.forEach(function (g, i) {
       var extra = i + 1 >= CHIPS_VISIBLE;
       if (extra) hidden++;
-      var cls = [];
-      if (g === genre) cls.push("active");
-      if (extra) cls.push("extra");
+      var classes = [];
+      if (g === genre) classes.push("active");
+      if (extra) classes.push("extra");
+      /* суффикс « лирика» прячется на мобильных у всех рубрик */
+      var mSx = /^(.+) лирика$/.exec(g);
+      var label = mSx
+        ? esc(mSx[1]) + '<span class="sx">' + esc(" лирика") + '</span>'
+        : esc(g);
       html += '<a href="' + listHref(q, g, 1) + '"' +
-        (cls.length ? ' class="' + cls.join(" ") + '"' : '') + '>' + esc(g) + '</a>';
+        (classes.length ? ' class="' + classes.join(" ") + '"' : '') +
+        (g === genre ? ' aria-current="true"' : '') + '>' + label + '</a>';
     });
     if (hidden) {
       html += '<button type="button" class="chips-toggle" id="chipsToggle" data-hidden="' + hidden +
-        '" aria-expanded="false">ещё ' + hidden + ' рубрик…</button>';
+        '" aria-expanded="false">Ещё ' + hidden + ' ' +
+        plural(hidden, "жанр", "жанра", "жанров") + '</button>';
     }
     return html;
+  }
+
+  /* Рубрики с количеством стихов: по убыванию популярности,
+     при равенстве — по алфавиту. */
+  function genreInfo(all) {
+    var counts = {};
+    var genres = [];
+    all.forEach(function (p) {
+      var g = normGenre(p.genre);
+      if (!counts[g]) { counts[g] = 0; genres.push(g); }
+      counts[g]++;
+    });
+    genres.sort(function (a, b) {
+      var d = counts[b] - counts[a];
+      return d !== 0 ? d : a.localeCompare(b, "ru");
+    });
+    return { genres: genres, counts: counts };
+  }
+
+  /* Внутренность блока результатов: чипсы, счётчик, карточки, пагинация.
+     Используется при начальном рендере и при живом поиске;
+     заодно обновляет listNav/lastList (стрелки, свайпы, «ко всем стихам»). */
+  function resultsInner(qStr, genre, page, all) {
+    var t = (qStr || "").trim();
+    var filtered = filterPoems(all, genre, normText(t));
+    var pages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+    if (page > pages) page = pages;
+    var slice = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+    listNav = { q: t, genre: genre, page: page, pages: pages };
+    lastList = { q: t, genre: genre, page: page };
+    var gi = genreInfo(all);
+    return '<div class="chips' + (genre ? ' expanded' : '') + '">' +
+        chipsHtml(t, genre, gi.genres, gi.counts) +
+      '</div>' +
+      '<p class="count' + ((t || genre) ? "" : " no-filter") + '">' +
+        (t || genre
+          ? "Найдено: " + filtered.length + " из " + all.length
+          : "Всего произведений: " + all.length) +
+      '</p>' +
+      cardGrid(slice, t) +
+      pagerHtml(filtered.length, page, pages, t, genre);
   }
 
   /* ── Главная: портрет + поток карточек ───────────────── */
@@ -92,28 +197,8 @@
     var all = poems().slice().sort(byDateDesc);
     currentNav = null; // навигация стрелками/свайпами — только на странице стиха
     var q = (params.get("q") || "").trim();
-    var ql = q.toLowerCase();
     var genre = params.get("genre") || "";
     var page = Math.max(1, parseInt(params.get("page"), 10) || 1);
-
-    var genres = [];
-    all.forEach(function (p) {
-      var g = normGenre(p.genre);
-      if (genres.indexOf(g) === -1) genres.push(g);
-    });
-    genres.sort(function (a, b) { return a.localeCompare(b, "ru"); });
-
-    var filtered = all.filter(function (p) {
-      if (genre && normGenre(p.genre) !== genre) return false;
-      if (!ql) return true;
-      return (p.title + " " + p.text).toLowerCase().indexOf(ql) !== -1;
-    });
-
-    var pages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
-    if (page > pages) page = pages;
-    var slice = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
-    listNav = { q: q, genre: genre, page: page, pages: pages };
-    lastList = { q: q, genre: genre, page: page };
 
     var a = window.AUTHOR;
     var html =
@@ -123,8 +208,13 @@
         '<p class="role">' + esc(a.bio) + '</p>' +
         '<p class="bio">' + esc(bioLine(all)) + '</p>' +
         '<div class="btns">' +
-          '<a class="btn ghost" id="vkBtn" href="' + esc(a.links.vk) + '" target="_blank" rel="noopener" title="Паблик ВКонтакте" aria-label="Паблик ВКонтакте">VK</a>' +
-          '<a class="btn ghost" href="' + esc(a.links.stihi) + '" target="_blank" rel="noopener" title="Страница автора на Стихи.ру" aria-label="Страница автора на Стихи.ру">Стихи.ру</a>' +
+          '<button class="btn random" id="randomBtn" type="button" title="Случайный стих (клавиша R)" aria-label="Случайный стих">' +
+            '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="4"/><circle cx="8.2" cy="8.2" r="1.3" fill="currentColor" stroke="none"/><circle cx="15.8" cy="8.2" r="1.3" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.3" fill="currentColor" stroke="none"/><circle cx="8.2" cy="15.8" r="1.3" fill="currentColor" stroke="none"/><circle cx="15.8" cy="15.8" r="1.3" fill="currentColor" stroke="none"/></svg>' +
+            'Случайный стих' +
+          '</button>' +
+          '<a class="btn ghost icon-btn" id="vkBtn" href="' + esc(a.links.vk) + '" target="_blank" rel="noopener" title="Паблик ВКонтакте" aria-label="Паблик ВКонтакте">' +
+            '<svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true"><path d="M15.07 2H8.93C3.33 2 2 3.33 2 8.93v6.14C2 20.67 3.33 22 8.93 22h6.14c5.6 0 6.93-1.33 6.93-6.93V8.93C22 3.33 20.67 2 15.07 2m3.08 14.27h-1.46c-.55 0-.72-.44-1.71-1.44-.86-.83-1.24-.94-1.45-.94-.3 0-.38.08-.38.5v1.31c0 .36-.11.57-1.04.57-1.55 0-3.28-.94-4.49-2.69-1.82-2.55-2.32-4.47-2.32-4.85 0-.21.08-.41.5-.41h1.46c.37 0 .51.17.66.57.72 2.09 1.94 3.92 2.44 3.92.19 0 .27-.09.27-.56V9.83c-.06-1.02-.6-1.1-.6-1.46 0-.17.14-.34.36-.34h2.29c.31 0 .42.17.42.54v2.65c0 .34.15.47.25.47.19 0 .35-.13.7-.48 1.08-1.21 1.85-3.07 1.85-3.07.1-.21.27-.41.64-.41h1.46c.44 0 .53.23.44.54-.18.85-1.97 3.37-1.97 3.37-.15.25-.21.36 0 .64.15.21.66.64 1 1.04.62.7 1.1 1.29 1.23 1.7.11.41-.1.62-.51.62"/></svg>' +
+          '</a>' +
           '<a class="btn ghost icon-btn" id="tgBtn" href="' + esc(a.links.telegram) + '" target="_blank" rel="noopener" title="Написать автору в Telegram" aria-label="Написать автору в Telegram">' +
             '<svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true"><path d="M9.04 15.51l-.38 5.32c.54 0 .78-.23 1.06-.51l2.55-2.44 5.28 3.87c.97.53 1.66.25 1.92-.9L23.9 3.8c.31-1.43-.52-1.99-1.46-1.64L1.7 10.36c-1.39.54-1.37 1.32-.24 1.67l5.03 1.57L18.8 6.9c.55-.36 1.05-.16.64.2L9.04 15.51z"/></svg>' +
           '</a>' +
@@ -138,34 +228,52 @@
           (genre ? '<input type="hidden" name="genre" value="' + esc(genre) + '">' : '') +
           '<input class="search" type="search" name="q" aria-label="Поиск по стихотворениям" placeholder="Поиск по ' + all.length + ' стихотворениям…" value="' + esc(q) + '">' +
         '</form>' +
-        '<div class="chips' + (genre ? ' expanded' : '') + '">' +
-          chipsHtml(q, genre, genres) +
-        '</div>' +
-        '<p class="count">' +
-          (q || genre
-            ? "Найдено: " + filtered.length + " из " + all.length
-            : "Всего произведений: " + all.length) +
-        '</p>' +
-        cardGrid(slice) +
-        pagerHtml(filtered.length, page, pages, q, genre) +
+        '<div id="results">' + resultsInner(q, genre, page, all) + '</div>' +
       '</main>';
 
     app.innerHTML = '<div class="wrap layout">' + html + '</div>';
 
-    document.getElementById("searchForm").addEventListener("submit", function (e) {
-      e.preventDefault();
-      location.hash = listHref(this.q.value.trim(), this.genre ? this.genre.value : "", 1);
-    });
-    /* «ещё N рубрик…» — показать/скрыть остальные чипсы (только мобильные). */
-    var chipsToggle = document.getElementById("chipsToggle");
-    if (chipsToggle) {
-      chipsToggle.addEventListener("click", function () {
-        var chips = document.querySelector(".chips");
-        var expanded = chips.classList.toggle("expanded");
-        this.setAttribute("aria-expanded", expanded ? "true" : "false");
-        this.textContent = expanded ? "свернуть рубрики" : "ещё " + this.getAttribute("data-hidden") + " рубрик…";
-      });
+    /* Живой поиск: перерисовывается только блок результатов (фокус в поле
+       сохраняется), URL обновляется через replaceState — без записей в истории. */
+    var searchForm = document.getElementById("searchForm");
+    var searchInput = searchForm.querySelector(".search");
+    var liveTimer = null;
+    function applyLive(value) {
+      var results = document.getElementById("results");
+      if (!results) return;
+      results.innerHTML = resultsInner(value, genre, 1, all);
+      bindChipsToggle();
+      var target = listHref((value || "").trim(), genre, 1);
+      if (location.hash !== target) history.replaceState(null, "", target);
     }
+    searchInput.addEventListener("input", function () {
+      clearTimeout(liveTimer);
+      var value = this.value;
+      liveTimer = setTimeout(function () { applyLive(value); }, 250);
+    });
+    searchForm.addEventListener("submit", function (e) {
+      e.preventDefault();
+      clearTimeout(liveTimer);
+      applyLive(searchInput.value);
+      window.scrollTo(0, 0);
+    });
+    /* «ещё N рубрик…» — показать/скрыть остальные чипсы (только мобильные).
+       Кнопка пересоздаётся при каждой перерисовке результатов — через хелпер. */
+    function bindChipsToggle() {
+      var chipsToggle = document.getElementById("chipsToggle");
+      if (chipsToggle) {
+        chipsToggle.addEventListener("click", function () {
+          var chips = document.querySelector(".chips");
+          var expanded = chips.classList.toggle("expanded");
+          this.setAttribute("aria-expanded", expanded ? "true" : "false");
+          var n = Number(this.getAttribute("data-hidden"));
+          this.textContent = expanded ? "Свернуть" : "Ещё " + n + " " + plural(n, "жанр", "жанра", "жанров");
+        });
+      }
+    }
+    bindChipsToggle();
+    var randomBtn = document.getElementById("randomBtn");
+    if (randomBtn) randomBtn.addEventListener("click", gotoRandomPoem);
     /* mailto молчит, если почтовая программа не настроена — дублируем адрес в буфер обмена. */
     var emailBtn = document.getElementById("emailBtn");
     if (emailBtn) {
@@ -233,6 +341,16 @@
         }, 1500);
       });
     }
+  }
+
+  /* Случайный стих: прямой переход по хешу — ссылку можно расшарить,
+     «назад» в браузере работает. Открытый стих из выбора исключается. */
+  function gotoRandomPoem() {
+    var list = poems();
+    var m = /^#\/?poem\/(.+)$/.exec(location.hash);
+    var pool = m ? list.filter(function (p) { return p.id !== m[1]; }) : list;
+    if (!pool.length) return;
+    location.hash = "#poem/" + pool[Math.floor(Math.random() * pool.length)].id;
   }
 
   /* Небольшое всплывающее уведомление внизу страницы (в одном экземпляре). */
@@ -303,15 +421,20 @@
     return all.length + " стихотворений и переводов" + span + ".";
   }
 
-  function cardGrid(list) {
+  function cardGrid(list, qStr) {
     if (!list.length) {
-      return '<div class="empty">Ничего не найдено. Измените условия поиска.</div>';
+      return '<div class="empty">Ничего не найдено. Измените условия поиска.' +
+        '<br><a class="btn small" href="#poems">Сбросить поиск</a></div>';
     }
+    var nq = normText((qStr || "").trim());
     return '<div class="cards">' + list.map(function (p) {
+      var title = nq && normText(p.title).indexOf(nq) !== -1
+        ? highlightHtml(p.title, nq)
+        : esc(p.title);
       return '<article class="card" data-href="#poem/' + esc(p.id) + '">' +
-        '<span class="tag">' + esc(normGenre(p.genre)) + '</span>' +
-        '<h3><a href="#poem/' + esc(p.id) + '">' + esc(p.title) + '</a></h3>' +
-        '<p>' + esc(excerpt(p.text)) + '</p>' +
+        '<a class="tag" href="' + listHref("", normGenre(p.genre), 1) + '">' + esc(normGenre(p.genre)) + '</a>' +
+        '<h3><a href="#poem/' + esc(p.id) + '">' + title + '</a></h3>' +
+        '<p>' + excerptHtml(p.text, nq) + '</p>' +
         '<div class="foot"><span>' + esc(showDate(p.date)) + '</span>' +
           '<a href="#poem/' + esc(p.id) + '">Читать →</a></div>' +
       '</article>';
@@ -335,14 +458,15 @@
       : '<span aria-hidden="true">←</span>');
     nums.forEach(function (n) {
       if (n === "…") { links.push("<span>…</span>"); return; }
-      links.push('<a href="' + listHref(q, genre, n) + '"' + (n === page ? ' class="active"' : '') + '>' + n + '</a>');
+      links.push('<a href="' + listHref(q, genre, n) + '"' +
+        (n === page ? ' class="active" aria-current="page"' : '') + '>' + n + '</a>');
     });
     links.push(page < pages
       ? '<a href="' + listHref(q, genre, page + 1) + '" title="Следующая страница" aria-label="Следующая страница">→</a>'
       : '<span aria-hidden="true">→</span>');
     return '<nav class="pager" aria-label="Страницы списка">' + links.join("") + '</nav>' +
       '<p class="pager-hint">' +
-        '<span class="hint-desktop">Листать также можно стрелками ← → на клавиатуре</span>' +
+        '<span class="hint-desktop">Листать также можно стрелками ← → на клавиатуре, R — случайный стих</span>' +
         '<span class="hint-mobile">Листать также можно свайпами ← →</span>' +
       '</p>';
   }
@@ -362,6 +486,7 @@
       return;
     }
     var p = list[i];
+    var a = window.AUTHOR;
     document.title = p.title + " — Яков Шахов — стихи";
     /* Список отсортирован от новых к старым — это и есть порядок чтения:
        «предыдущий» — более новый, «следующий» — более старый. */
@@ -370,13 +495,17 @@
     listNav = null;
     app.innerHTML = '<div class="wrap page-center">' +
       '<article class="poem">' +
-        '<span class="tag">' + esc(normGenre(p.genre)) + '</span>' +
+        '<a class="tag" href="' + listHref("", normGenre(p.genre), 1) + '">' + esc(normGenre(p.genre)) + '</a>' +
         '<h2>' + esc(p.title) + '</h2>' +
         '<div class="meta">' + esc(showDate(p.date)) + '</div>' +
         '<pre class="text">' + esc(p.text) + '</pre>' +
+        '<div class="poem-sign">' + esc(a.name) + '</div>' +
         '<div class="source-link">' +
           '<button class="poem-share" id="poemShareBtn" type="button" title="Поделиться" aria-label="Поделиться">' +
             '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="M8.59 13.51l6.83 3.98M15.41 6.51l-6.82 3.98"/></svg>' +
+          '</button>' +
+          '<button class="poem-share" id="copyPoemBtn" type="button" title="Копировать текст" aria-label="Копировать текст">' +
+            '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>' +
           '</button>' +
           '<button class="poem-share to-top" id="toTopBtn" type="button" title="Наверх" aria-label="Наверх">' +
             '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7"/></svg>' +
@@ -388,6 +517,12 @@
         '<span class="poem-pos">' + (i + 1) + ' из ' + list.length + '</span>' +
         (next ? '<a href="#poem/' + esc(next.id) + '">' + esc(next.title) + ' →</a>' : '') +
       '</nav>' +
+      '<p class="poem-random">' +
+        '<button type="button" class="random-link" id="randomLink" title="Случайный стих (клавиша R)">' +
+          '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="4"/><circle cx="8.2" cy="8.2" r="1.3" fill="currentColor" stroke="none"/><circle cx="15.8" cy="8.2" r="1.3" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.3" fill="currentColor" stroke="none"/><circle cx="8.2" cy="15.8" r="1.3" fill="currentColor" stroke="none"/><circle cx="15.8" cy="15.8" r="1.3" fill="currentColor" stroke="none"/></svg>' +
+          'Случайный стих' +
+        '</button>' +
+      '</p>' +
       '<p><a class="back-link" href="' +
         (lastList ? listHref(lastList.q, lastList.genre, lastList.page) : "#poems") +
       '">← ко всем стихам</a></p>';
@@ -397,6 +532,15 @@
         sharePage(location.href);
       });
     }
+    /* Копия текста для цитирования: заголовок, текст, подпись автора. */
+    var copyBtn = document.getElementById("copyPoemBtn");
+    if (copyBtn) {
+      copyBtn.addEventListener("click", function () {
+        copyText(p.title.toUpperCase() + "\n\n" + p.text + "\n\n" + a.name, "Стихотворение скопировано");
+      });
+    }
+    var randomLink = document.getElementById("randomLink");
+    if (randomLink) randomLink.addEventListener("click", gotoRandomPoem);
     var toTop = document.getElementById("toTopBtn");
     if (toTop) {
       toTop.addEventListener("click", function () {
@@ -407,12 +551,13 @@
 
   /* ── Маршрутизация по хешу ───────────────────────────── */
   function route() {
+    var h = location.hash.replace(/^#\/?/, "");
     /* Состояние уходящего представления: уходим со списка — запоминаем
-       прокрутку, чтобы вернуть её при возврате «ко всем стихам». */
-    var outgoingIsList = !currentNav && !!listNav;
+       прокрутку, чтобы вернуть её при возврате «ко всем стихам».
+       Уход по логотипу («#home») — всегда «с чистого листа», не запоминаем. */
+    var outgoingIsList = h !== "home" && !currentNav && !!listNav;
     var outgoingListKey = outgoingIsList ? listNav.q + "|" + listNav.genre + "|" + listNav.page : null;
     var outgoingScrollY = window.scrollY;
-    var h = location.hash.replace(/^#\/?/, "");
     var section = decodeURIComponent(h.split(/[/?]/)[0] || "") || "home";
     var nav = document.querySelectorAll("nav.main a");
     nav.forEach(function (a) {
@@ -423,11 +568,15 @@
       renderPoem(h.slice(5));
       window.scrollTo(0, 0);
     } else {
+      /* «#home» — явный путь «на главную» (логотип): без фильтров
+         и без восстановления прокрутки, всегда с чистого листа. */
+      var goingHome = h === "home";
+      if (goingHome) savedListScroll = null;
       var params = new URLSearchParams(h.split("?")[1] || "");
       renderHome(params);
       document.title = "Яков Шахов — стихи";
       var key = listNav.q + "|" + listNav.genre + "|" + listNav.page;
-      if (!outgoingIsList && savedListScroll && savedListScroll.key === key) {
+      if (!goingHome && !outgoingIsList && savedListScroll && savedListScroll.key === key) {
         window.scrollTo(0, savedListScroll.y); /* возврат со стиха */
       } else {
         window.scrollTo(0, 0);
@@ -440,6 +589,28 @@
 
   window.addEventListener("hashchange", route);
   route();
+
+  /* Логотип: если мы уже на «#home», хеш не меняется и route не сработает —
+     прокручиваем наверх вручную (переход по клику всё равно сбрасывает фильтры). */
+  var logo = document.querySelector(".logo");
+  if (logo) {
+    logo.addEventListener("click", function () {
+      if (location.hash === "#home" || location.hash === "" || location.hash === "#") {
+        window.scrollTo({ top: 0, behavior: "smooth" });
+      }
+    });
+  }
+
+  /* Skip-link: не меняем хеш (иначе route сбросит фильтры списка),
+     просто переводим фокус в содержимое. */
+  var skipLink = document.querySelector(".skip-link");
+  if (skipLink) {
+    skipLink.addEventListener("click", function (e) {
+      e.preventDefault();
+      app.focus();
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    });
+  }
 
   /* ── Переключатель светлой/тёмной темы ──── */
   var themeBtn = document.getElementById("themeToggle");
@@ -474,6 +645,12 @@
     var tag = (el && el.tagName || "").toLowerCase();
     return tag === "input" || tag === "textarea" || tag === "select";
   }
+  /* Фокус на ссылке/кнопке: стрелки должны листать страницу, а не дёргать
+     навигацию по стихам одновременно с прокруткой сфокусированного элемента. */
+  function pressable(el) {
+    var tag = (el && el.tagName || "").toLowerCase();
+    return tag === "a" || tag === "button";
+  }
   function navLeft() {
     if (currentNav) gotoPoem(currentNav.prev);
     else if (listNav) gotoPage(listNav.page - 1);
@@ -483,9 +660,19 @@
     else if (listNav) gotoPage(listNav.page + 1);
   }
   document.addEventListener("keydown", function (e) {
-    if (e.altKey || e.ctrlKey || e.metaKey || typingTarget(e.target)) return;
+    if (e.altKey || e.ctrlKey || e.metaKey || typingTarget(e.target) ||
+        pressable(document.activeElement)) return;
     if (e.key === "ArrowLeft") navLeft();
     else if (e.key === "ArrowRight") navRight();
+    /* e.code — независимо от раскладки (русская «К» — та же клавиша R) */
+    else if (e.code === "KeyR") gotoRandomPoem();
+  });
+  /* Клик мышью снимает фокус со ссылки/кнопки (e.detail === 0 — активация
+     с клавиатуры, там фокус сохраняем): стрелки не «прилипают» к нажатому. */
+  document.addEventListener("click", function (e) {
+    if (!e.target.closest || e.detail === 0) return;
+    var el = e.target.closest("a, button");
+    if (el) el.blur();
   });
   /* Клик по карточке открывает стих; клики по ссылкам внутри — нет. */
   document.addEventListener("click", function (e) {

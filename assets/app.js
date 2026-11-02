@@ -9,6 +9,25 @@
      либо страница списка на главной. */
   var currentNav = null;
   var listNav = null;
+  /* Цикл разделов для свайпов/стрелок на списках: Стихи → Аудио → Видео →
+     по кругу. sectionNav выставляется на страницах-списках (см. render*). */
+  var sectionNav = null;
+  var SECTION_CYCLE = {
+    "#poems": { prev: "#video", next: "#audio" },
+    "#audio": { prev: "#poems", next: "#video" },
+    "#video": { prev: "#audio", next: "#poems" }
+  };
+  /* Краевые шевроны-«соседи» — как на странице стиха, но листают разделы */
+  function sectionEdgeNavHtml() {
+    return '<button type="button" class="edge-nav edge-prev" aria-label="Предыдущий раздел">‹</button>' +
+      '<button type="button" class="edge-nav edge-next" aria-label="Следующий раздел">›</button>';
+  }
+  function bindSectionNav() {
+    var ep = document.querySelector(".edge-nav.edge-prev");
+    var en = document.querySelector(".edge-nav.edge-next");
+    if (ep) ep.addEventListener("click", function () { if (sectionNav) location.hash = sectionNav.prev; });
+    if (en) en.addEventListener("click", function () { if (sectionNav) location.hash = sectionNav.next; });
+  }
   /* Последнее состояние списка — для ссылки «ко всем стихам»
      и восстановления прокрутки после возврата со страницы стиха. */
   var lastList = null;
@@ -122,9 +141,12 @@
   }
 
   /* Чипсы рубрик: по популярности (убывание числа стихов), при равенстве —
-     по алфавиту. На мобильных видны первые три, остальные открывает
-     кнопка «Ещё N жанров» (класс expanded вешается на контейнер). */
-  var CHIPS_VISIBLE = 4; /* вместе с «все» */
+     по алфавиту. Свернуты на всех экранах: на мобильных видны первые три,
+     на десктопе — первые девять, остальные открывает кнопка «Ещё N жанров»
+     (класс expanded вешается на контейнер; при выбранной рубрике список
+     раскрыт сразу). */
+  var MOBILE_CHIPS = 4;  /* вместе с «все» */
+  var DESKTOP_CHIPS = 10; /* вместе с «все» */
   /* «1 жанр / 2 жанра / 5 жанров» для кнопки «Ещё N …» */
   function plural(n, one, few, many) {
     var n10 = n % 10, n100 = n % 100;
@@ -135,13 +157,16 @@
   function chipsHtml(q, genre, genres, counts) {
     var html = '<a href="' + listHref(q, "", 1) + '"' +
       (genre ? "" : ' class="active" aria-current="true"') + '>все</a>';
-    var hidden = 0;
+    var hiddenM = 0, hiddenD = 0;
     genres.forEach(function (g, i) {
-      var extra = i + 1 >= CHIPS_VISIBLE;
-      if (extra) hidden++;
+      var extraM = i + 1 >= MOBILE_CHIPS;
+      var extraD = i + 1 >= DESKTOP_CHIPS;
+      if (extraM) hiddenM++;
+      if (extraD) hiddenD++;
       var classes = [];
       if (g === genre) classes.push("active");
-      if (extra) classes.push("extra");
+      if (extraM) classes.push("extra");
+      if (extraD) classes.push("extra-d");
       /* суффикс « лирика» прячется на мобильных у всех рубрик */
       var mSx = /^(.+) лирика$/.exec(g);
       var label = mSx
@@ -151,10 +176,11 @@
         (classes.length ? ' class="' + classes.join(" ") + '"' : '') +
         (g === genre ? ' aria-current="true"' : '') + '>' + label + '</a>';
     });
-    if (hidden) {
-      html += '<button type="button" class="chips-toggle" id="chipsToggle" data-hidden="' + hidden +
-        '" aria-expanded="false">Ещё ' + hidden + ' ' +
-        plural(hidden, "жанр", "жанра", "жанров") + '</button>';
+    if (hiddenD) {
+      html += '<button type="button" class="chips-toggle" id="chipsToggle"' +
+        ' data-hidden-m="' + hiddenM + '" data-hidden-d="' + hiddenD + '"' +
+        ' aria-expanded="false">Ещё ' + hiddenD + ' ' +
+        plural(hiddenD, "жанр", "жанра", "жанров") + '</button>';
     }
     return html;
   }
@@ -201,21 +227,16 @@
   }
 
   /* ── Главная: портрет + поток карточек ───────────────── */
-  function renderHome(params) {
-    var all = poems().slice().sort(byDateDesc);
-    currentNav = null; // навигация стрелками/свайпами — только на странице стиха
-    var q = (params.get("q") || "").trim();
-    var genre = params.get("genre") || "";
-    var page = Math.max(1, parseInt(params.get("page"), 10) || 1);
-
+  /* Портретная колонка автора — общая для главной и разделов. */
+  function authorAsideHtml() {
+    var all = poems();
     var a = window.AUTHOR;
     /* Био: на десктопе — подробнее (2–3 строки), на мобильных — одна строка.
        Переключение теми же классами, что и подсказки hint-desktop/hint-mobile. */
     var bioLong = "Пишу стихи с 2010 года. В этом собрании — " + all.length +
       " стихотворений и переводов: короткие зарисовки, лирика и большие поэмы. " +
       "Листайте как книгу, выбирайте рубрику — или доверьтесь случаю и откройте случайное.";
-    var html =
-      '<aside>' +
+    return '<aside>' +
         '<div class="portrait"><img src="' + esc(a.photo) + '" alt="' + esc(a.name) + '"></div>' +
         '<h1>' + esc(a.name) + '</h1>' +
         '<p class="role">' + esc(a.bio) + '</p>' +
@@ -238,56 +259,28 @@
             '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M22 6l-10 7L2 6"/></svg>' +
           '</a>' +
         '</div>' +
-      '</aside>' +
-      '<main>' +
-        '<form id="searchForm">' +
-          (genre ? '<input type="hidden" name="genre" value="' + esc(genre) + '">' : '') +
-          '<input class="search" type="search" name="q" aria-label="Поиск по стихотворениям" placeholder="Поиск по ' + all.length + ' стихотворениям…" value="' + esc(q) + '">' +
-        '</form>' +
-        '<div id="results">' + resultsInner(q, genre, page, all) + '</div>' +
-      '</main>';
+      '</aside>';
+  }
 
-    app.innerHTML = '<div class="wrap layout">' + html + '</div>';
+  /* Если колонка контента ниже портретной (короткие страницы разделов),
+     даём sticky-портрету «дорожку» для закрепления — как на странице
+     стихов: без неё фото уезжает под шапку при первом же прокруте. */
+  function stickAside() {
+    /* на мобильных aside не sticky (одноколоночная вёрстка) — не вмешиваемся */
+    if (!(window.matchMedia && window.matchMedia("(min-width: 981px)").matches)) return;
+    var as = document.querySelector(".layout > aside");
+    var mn = document.querySelector(".layout > main");
+    if (!as || !mn || mn.offsetHeight >= as.offsetHeight) return;
+    var footer = document.querySelector("footer.site");
+    /* 80 — нижний отступ .layout, +20 — запас: столько прокрутки остаётся
+       после того, как весь контент уже просмотрен */
+    mn.style.minHeight = as.offsetHeight + 80 +
+      (footer ? footer.offsetHeight : 0) + 20 + "px";
+  }
 
-    /* Живой поиск: перерисовывается только блок результатов (фокус в поле
-       сохраняется), URL обновляется через replaceState — без записей в истории. */
-    var searchForm = document.getElementById("searchForm");
-    var searchInput = searchForm.querySelector(".search");
-    var liveTimer = null;
-    function applyLive(value) {
-      var results = document.getElementById("results");
-      if (!results) return;
-      results.innerHTML = resultsInner(value, genre, 1, all);
-      bindChipsToggle();
-      var target = listHref((value || "").trim(), genre, 1);
-      if (location.hash !== target) history.replaceState(null, "", target);
-    }
-    searchInput.addEventListener("input", function () {
-      clearTimeout(liveTimer);
-      var value = this.value;
-      liveTimer = setTimeout(function () { applyLive(value); }, 250);
-    });
-    searchForm.addEventListener("submit", function (e) {
-      e.preventDefault();
-      clearTimeout(liveTimer);
-      applyLive(searchInput.value);
-      window.scrollTo(0, 0);
-    });
-    /* «ещё N рубрик…» — показать/скрыть остальные чипсы (только мобильные).
-       Кнопка пересоздаётся при каждой перерисовке результатов — через хелпер. */
-    function bindChipsToggle() {
-      var chipsToggle = document.getElementById("chipsToggle");
-      if (chipsToggle) {
-        chipsToggle.addEventListener("click", function () {
-          var chips = document.querySelector(".chips");
-          var expanded = chips.classList.toggle("expanded");
-          this.setAttribute("aria-expanded", expanded ? "true" : "false");
-          var n = Number(this.getAttribute("data-hidden"));
-          this.textContent = expanded ? "Свернуть" : "Ещё " + n + " " + plural(n, "жанр", "жанра", "жанров");
-        });
-      }
-    }
-    bindChipsToggle();
+  /* Обработчики кнопок портретной колонки (вызывается после каждого рендера). */
+  function bindAuthorAside() {
+    var a = window.AUTHOR;
     var randomBtn = document.getElementById("randomBtn");
     if (randomBtn) randomBtn.addEventListener("click", gotoRandomPoem);
     /* mailto молчит, если почтовая программа не настроена — дублируем адрес в буфер обмена. */
@@ -357,6 +350,76 @@
         }, 1500);
       });
     }
+  }
+
+  function renderHome(params) {
+    var all = poems().slice().sort(byDateDesc);
+    currentNav = null; // навигация стрелками/свайпами — только на странице стиха
+    var q = (params.get("q") || "").trim();
+    var genre = params.get("genre") || "";
+    var page = Math.max(1, parseInt(params.get("page"), 10) || 1);
+
+    var html = authorAsideHtml() +
+      '<main>' +
+        '<form id="searchForm">' +
+          (genre ? '<input type="hidden" name="genre" value="' + esc(genre) + '">' : '') +
+          '<input class="search" type="search" name="q" aria-label="Поиск по стихотворениям" placeholder="Поиск по ' + all.length + ' стихотворениям…" value="' + esc(q) + '">' +
+        '</form>' +
+        '<div id="results">' + resultsInner(q, genre, page, all) + '</div>' +
+      '</main>';
+
+    sectionNav = SECTION_CYCLE["#poems"];
+    app.innerHTML = '<div class="wrap layout">' + html + '</div>' + sectionEdgeNavHtml();
+
+    /* Живой поиск: перерисовывается только блок результатов (фокус в поле
+       сохраняется), URL обновляется через replaceState — без записей в истории. */
+    var searchForm = document.getElementById("searchForm");
+    var searchInput = searchForm.querySelector(".search");
+    var liveTimer = null;
+    function applyLive(value) {
+      var results = document.getElementById("results");
+      if (!results) return;
+      results.innerHTML = resultsInner(value, genre, 1, all);
+      bindChipsToggle();
+      var target = listHref((value || "").trim(), genre, 1);
+      if (location.hash !== target) history.replaceState(null, "", target);
+    }
+    searchInput.addEventListener("input", function () {
+      clearTimeout(liveTimer);
+      var value = this.value;
+      liveTimer = setTimeout(function () { applyLive(value); }, 250);
+    });
+    searchForm.addEventListener("submit", function (e) {
+      e.preventDefault();
+      clearTimeout(liveTimer);
+      applyLive(searchInput.value);
+      window.scrollTo(0, 0);
+    });
+    /* «ещё N жанров» — показать/скрыть остальные чипсы (свернуто и на
+       мобильных, и на десктопе; сколько скрыто — зависит от экрана).
+       Кнопка пересоздаётся при каждой перерисовке результатов — через хелпер. */
+    function bindChipsToggle() {
+      var chipsToggle = document.getElementById("chipsToggle");
+      if (chipsToggle) {
+        var label = function (expanded) {
+          var mobile = window.matchMedia && window.matchMedia("(max-width: 640px)").matches;
+          var n = Number(chipsToggle.getAttribute(mobile ? "data-hidden-m" : "data-hidden-d"));
+          return expanded ? "Свернуть" : "Ещё " + n + " " + plural(n, "жанр", "жанра", "жанров");
+        };
+        chipsToggle.textContent = label(false);
+        chipsToggle.addEventListener("click", function () {
+          var chips = document.querySelector(".chips");
+          var expanded = chips.classList.toggle("expanded");
+          chipsToggle.setAttribute("aria-expanded", expanded ? "true" : "false");
+          chipsToggle.textContent = label(expanded);
+        });
+      }
+    }
+    bindChipsToggle();
+    bindSectionNav();
+    bindAuthorAside();
+    /* подсказка «листайте свайпом» — один раз, на первом заходе на сайт */
+    maybeShowSwipeHint();
   }
 
   /* Случайный стих: прямой переход по хешу — ссылку можно расшарить,
@@ -459,8 +522,9 @@
     }).join("") + '</div>';
   }
 
-  /* Компактная пагинация: ← 1 2 3 … N →; листать также можно стрелками
-     клавиатуры и свайпами (подсказка под номерами). */
+  /* Компактная пагинация: ← 1 2 3 … N →. Свайпы и стрелки клавиатуры
+     на списках занятны переключением разделов — потому подсказка только
+     про «случайный стих» (десктоп). */
   function pagerHtml(total, page, pages, q, genre) {
     if (pages <= 1) return "";
     var nums = [];
@@ -483,10 +547,7 @@
       ? '<a href="' + listHref(q, genre, page + 1) + '" title="Следующая страница" aria-label="Следующая страница">→</a>'
       : '<span aria-hidden="true">→</span>');
     return '<nav class="pager" aria-label="Страницы списка">' + links.join("") + '</nav>' +
-      '<p class="pager-hint">' +
-        '<span class="hint-desktop">Листать также можно стрелками ← → на клавиатуре, R — случайный стих</span>' +
-        '<span class="hint-mobile">Листать также можно свайпами ← →</span>' +
-      '</p>';
+      '<p class="pager-hint"><span class="hint-desktop">R — случайный стих</span></p>';
   }
 
   /* ── Страница стихотворения ──────────────────────────── */
@@ -498,6 +559,8 @@
       if (list[k].id === id) { i = k; break; }
     }
     if (i === -1) {
+      currentNav = null;
+      sectionNav = null;
       app.innerHTML = '<div class="wrap page-center">' +
         '<h2 class="section">Произведение не найдено</h2>' +
         '<p><a class="back-link" href="#poems">← ко всем стихам</a></p></div>';
@@ -505,12 +568,23 @@
     }
     var p = list[i];
     var a = window.AUTHOR;
+    /* Записи этого стихотворения: если есть аудио/видео чтения —
+       ссылки на них под текстом (обратная сторона «К тексту» карточек). */
+    var poemAudio = (window.AUDIOS || []).filter(function (x) { return x.poem === p.id; });
+    var poemVideo = (window.VIDEOS || []).filter(function (x) { return x.poem === p.id; });
+    var mediaRow = (poemAudio.length || poemVideo.length
+      ? '<div class="pmedia-row">' +
+          (poemAudio.length ? '<a class="pmedia" href="#audio" title="Аудиозапись чтения">Послушать →</a>' : '') +
+          (poemVideo.length ? '<a class="pmedia" href="#video/' + esc(poemVideo[0].id) + '" title="Видеозапись чтения">Смотреть видео →</a>' : '') +
+        '</div>'
+      : '');
     document.title = p.title + " — Яков Шахов — стихи";
     /* Список отсортирован от новых к старым — это и есть порядок чтения:
        «предыдущий» — более новый, «следующий» — более старый. */
     var prev = list[i - 1], next = list[i + 1];
     currentNav = { prev: prev, next: next };
     listNav = null;
+    sectionNav = null;
     app.innerHTML = '<div class="wrap page-center">' +
       '<article class="poem">' +
         '<a class="tag" href="' + listHref("", normGenre(p.genre), 1) + '">' + esc(normGenre(p.genre)) + '</a>' +
@@ -520,6 +594,7 @@
           '<span class="meta-pos">' + (i + 1) + ' из ' + list.length + '</span></div>' +
         '<pre class="text">' + esc(p.text) + '</pre>' +
         '<div class="poem-sign">' + esc(a.name) + '</div>' +
+        mediaRow +
         '<div class="source-link">' +
           '<button class="poem-share" id="poemShareBtn" type="button" title="Поделиться" aria-label="Поделиться">' +
             '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="M8.59 13.51l6.83 3.98M15.41 6.51l-6.82 3.98"/></svg>' +
@@ -583,7 +658,305 @@
     if (edgePrev) edgePrev.addEventListener("click", function () { gotoPoem(prev); });
     var edgeNext = document.querySelector(".edge-nav.edge-next");
     if (edgeNext) edgeNext.addEventListener("click", function () { gotoPoem(next); });
-    maybeShowSwipeHint();
+  }
+
+  /* ── Раздел «Видео» ──────────────────────────────────── */
+  /* Записи из VK: в данных только ссылка вида vkvideo.ru/video-ИД_ИД —
+     oid/id для embed вычисляются из неё. Сортировка — как у стихов. */
+  function videos() {
+    return (window.VIDEOS || []).slice().sort(byDateDesc);
+  }
+  function videoEmbedSrc(v) {
+    var m = /video(-?\d+)_(\d+)/.exec(v.vk || v.id || "");
+    return m
+      ? "https://vk.com/video_ext.php?oid=" + m[1] + "&id=" + m[2] + "&hd=2&autoplay=1&js_api=1"
+      : "";
+  }
+
+  /* VK-плеер при autoplay стартует без звука. По протоколу VK Video JS API
+     шлём в плеер init, а после его ответа (событие inited) — команду unmute.
+     Если handshake не случится, плеер просто работает как раньше. */
+  var unbindVideoMsgs = null;
+  function bindVideoUnmute(iframe) {
+    if (unbindVideoMsgs) { unbindVideoMsgs(); unbindVideoMsgs = null; }
+    if (!iframe) return;
+    var origin = null, unmuted = false;
+    var pending = [{ method: "unmute" }];
+    function onMsg(e) {
+      if (e.source !== iframe.contentWindow) return;
+      if (unmuted || !iframe.isConnected) {
+        window.removeEventListener("message", onMsg);
+        unbindVideoMsgs = null;
+        return;
+      }
+      if (!origin) origin = e.origin;
+      var d = e.data || {};
+      if (d.event === "inited" || d.event === "started") {
+        unmuted = true;
+        pending.splice(0).forEach(function (m) {
+          iframe.contentWindow.postMessage(m, origin);
+        });
+        window.removeEventListener("message", onMsg);
+        unbindVideoMsgs = null;
+      }
+    }
+    /* init можно слать сразу с «*»: после первого ответа плеера
+       origin фиксируем и шлём дальше только туда */
+    iframe.contentWindow.postMessage({ method: "init" }, "*");
+    window.addEventListener("message", onMsg);
+    unbindVideoMsgs = function () { window.removeEventListener("message", onMsg); };
+  }
+  function poemById(id) {
+    if (!id) return null;
+    var list = poems();
+    for (var k = 0; k < list.length; k++) {
+      if (list[k].id === id) return list[k];
+    }
+    return null;
+  }
+  var PLAY_SVG = '<svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor" aria-hidden="true"><path d="M8 5.5v13l11-6.5z"/></svg>';
+
+  /* Умная ссылка на сенсорных устройствах: сначала пробуем установленное
+     приложение через deep link, при неудаче — веб-версию. Страница ушла
+     в фон / окно потеряло фокус — значит, приложение открылось. */
+  function openViaApp(e, deeplink, fallbackUrl, wait) {
+    e.preventDefault();
+    var wentAway = false;
+    document.addEventListener("visibilitychange", function onHide() {
+      if (document.hidden) wentAway = true;
+      document.removeEventListener("visibilitychange", onHide);
+    });
+    var f = document.createElement("iframe");
+    f.style.display = "none";
+    f.src = deeplink;
+    document.body.appendChild(f);
+    setTimeout(function () { f.remove(); }, 2000);
+    setTimeout(function () {
+      if (!wentAway) window.open(fallbackUrl, "_blank");
+    }, wait || 1500);
+  }
+
+  function renderVideoList() {
+    currentNav = null;
+    listNav = null;
+    document.title = "Видео — Яков Шахов — стихи";
+    var all = videos();
+    var cards = all.map(function (v) {
+      var p = poemById(v.poem);
+      return '<article class="card video-card" data-href="#video/' + esc(v.id) + '">' +
+        '<div class="vcover" aria-hidden="true">' +
+          (v.cover ? '<img src="' + esc(v.cover) + '" alt="" loading="lazy">' : '') +
+          '<span class="vplay">' + PLAY_SVG + '</span>' +
+        '</div>' +
+        (p ? '<a class="tag" href="' + listHref("", normGenre(p.genre), 1) + '">' + esc(normGenre(p.genre)) + '</a>' : '') +
+        '<h3><a href="#video/' + esc(v.id) + '">' + esc(v.title) + '</a></h3>' +
+        '<div class="foot"><span>' + esc(showDate(v.date)) + '</span>' +
+          '<a href="#video/' + esc(v.id) + '">Смотреть →</a></div>' +
+      '</article>';
+    }).join("");
+    sectionNav = SECTION_CYCLE["#video"];
+    app.innerHTML = '<div class="wrap layout video-page">' + authorAsideHtml() +
+      '<main>' +
+        (all.length
+          ? '<div class="cards">' + cards + '</div>'
+          : '<div class="empty">Видео скоро появятся.</div>') +
+      '</main>' +
+    '</div>' + sectionEdgeNavHtml();
+    bindSectionNav();
+    bindAuthorAside();
+    stickAside();
+  }
+
+  function renderVideo(id) {
+    document.title = "Яков Шахов — стихи";
+    var list = videos();
+    var i = -1;
+    for (var k = 0; k < list.length; k++) {
+      if (list[k].id === id) { i = k; break; }
+    }
+    if (i === -1) {
+      currentNav = null;
+      listNav = null;
+      sectionNav = null;
+      app.innerHTML = '<div class="wrap page-center">' +
+        '<h2 class="section">Видео не найдено</h2>' +
+        '<p><a class="back-link" href="#video">← ко всем видео</a></p></div>';
+      return;
+    }
+    var v = list[i];
+    var p = poemById(v.poem);
+    var prev = list[i - 1], next = list[i + 1];
+    currentNav = { prev: prev, next: next, base: "#video/" };
+    listNav = null;
+    sectionNav = null;
+    trackGoal("video_play");
+    var src = videoEmbedSrc(v);
+    document.title = v.title + " — видео — Яков Шахов — стихи";
+    app.innerHTML = '<div class="wrap layout">' + authorAsideHtml() +
+      '<main>' +
+        '<article class="video-full">' +
+          (src
+            ? '<div class="vframe"><iframe src="' + esc(src) + '" allow="autoplay; encrypted-media; fullscreen; picture-in-picture; screen-wake-lock;" allowfullscreen title="' + esc(v.title) + '"></iframe></div>'
+            : '<div class="vcover" aria-hidden="true"><span class="vplay">' + PLAY_SVG + '</span></div>') +
+          '<h2>' + esc(v.title) + '</h2>' +
+          '<div class="meta"><span>' + esc(showDate(v.date)) + '</span>' +
+            '<span class="meta-pos">' + (i + 1) + ' из ' + list.length + '</span></div>' +
+          (p ? '<a class="vpoem" href="#poem/' + esc(p.id) + '">Стихотворение: «' + esc(p.title) + '» →</a>' : '') +
+        '</article>' +
+        '<nav class="poem-nav">' +
+          (prev
+            ? '<a class="pn-full" href="#video/' + esc(prev.id) + '">← ' + esc(prev.title) + '</a>' +
+              '<a class="pn-compact" href="#video/' + esc(prev.id) + '" aria-label="Предыдущее видео">‹</a>'
+            : '<span></span>') +
+          '<span class="poem-pos">' + (i + 1) + ' из ' + list.length + '</span>' +
+          (next
+            ? '<a class="pn-full" href="#video/' + esc(next.id) + '">' + esc(next.title) + ' →</a>' +
+              '<a class="pn-compact" href="#video/' + esc(next.id) + '" aria-label="Следующее видео">›</a>'
+            : '') +
+        '</nav>' +
+        '<div class="poem-actions">' +
+          '<a class="back-link" href="#video">← ко всем видео</a>' +
+          '<a class="vk-link" href="' + esc(v.vk) + '" target="_blank" rel="noopener" title="Открыть на VK Видео">Смотреть на VK Видео ↗</a>' +
+        '</div>' +
+      '</main>' +
+    '</div>' +
+    (prev ? '<button type="button" class="edge-nav edge-prev" aria-label="Предыдущее видео">‹</button>' : '') +
+    (next ? '<button type="button" class="edge-nav edge-next" aria-label="Следующее видео">›</button>' : '');
+    swipeHintEl = null;
+    bindAuthorAside();
+    stickAside();
+    bindVideoUnmute(document.querySelector(".vframe iframe"));
+    /* «Смотреть на VK Видео»: на сенсорных сначала пробуем приложение
+       (vk:// понимает пути vk.com, среди них — video), при неудаче — веб. */
+    var vkLink = document.querySelector(".vk-link");
+    if (vkLink) {
+      vkLink.addEventListener("click", function (e) {
+        var coarse = window.matchMedia && window.matchMedia("(pointer: coarse)").matches;
+        if (!coarse) return;
+        openViaApp(e, v.vk.replace(/^https:\/\/vkvideo\.ru\//, "vk://vk.com/"), v.vk);
+      });
+    }
+  }
+
+  /* ── Раздел «Аудио» ──────────────────────────────────── */
+  /* VK своего аудиоплеера наружу не отдаёт, поэтому записи играют
+     кастомным плеером сайта (скрытый <audio> + своя кнопка и полоса
+     прогресса) с файлов в assets/audio; ссылка на VK — запасной путь. */
+  function audios() {
+    return (window.AUDIOS || []).slice().sort(byDateDesc);
+  }
+
+  var APLAY_SVG = '<svg class="i-play" viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true"><path d="M8 5.5v13l11-6.5z"/></svg>';
+  var APAUSE_SVG = '<svg class="i-pause" viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true"><path d="M7 5h3.5v14H7zM13.5 5H17v14h-3.5z"/></svg>';
+
+  function fmtTime(sec) {
+    var s = Math.max(0, Math.floor(sec || 0));
+    var m = Math.floor(s / 60), r = s % 60;
+    return m + ":" + (r < 10 ? "0" : "") + r;
+  }
+
+  function renderAudioList() {
+    currentNav = null;
+    listNav = null;
+    document.title = "Аудио — Яков Шахов — стихи";
+    var all = audios();
+    var cards = all.map(function (a) {
+      var p = poemById(a.poem);
+      return '<article class="card audio-card">' +
+        (p
+          ? '<div class="card-top">' +
+              '<a class="tag" href="' + listHref("", normGenre(p.genre), 1) + '">' + esc(normGenre(p.genre)) + '</a>' +
+              '<a class="totext" href="#poem/' + esc(p.id) + '" title="Перейти к тексту стихотворения">К тексту</a>' +
+            '</div>'
+          : '') +
+        '<h3>' + esc(a.title) + '</h3>' +
+        (a.reader ? '<p class="areader">' + esc(a.reader) + '</p>' : '') +
+        (a.desc ? '<p class="adesc">' + esc(a.desc) + '</p>' : '') +
+        (a.src
+          ? '<div class="aplayer" data-title="' + esc(a.title) + '">' +
+              '<button type="button" class="aplay" aria-label="Слушать: ' + esc(a.title) + '">' +
+                APLAY_SVG + APAUSE_SVG +
+              '</button>' +
+              '<div class="abar" title="Перемотка"><div class="atrack"><div class="aprog"></div></div></div>' +
+              '<span class="atime">0:00 / –:––</span>' +
+              '<audio preload="none" src="' + esc(a.src) + '"></audio>' +
+            '</div>'
+          : (a.vk
+              ? '<p class="aempty">Файл ещё не добавлен — послушать можно во ВКонтакте.</p>'
+              : '<p class="aempty">Файл ещё не добавлен.</p>')) +
+        '<div class="foot"><span>' + esc(showDate(a.date)) + '</span>' +
+          (a.vk ? '<a href="' + esc(a.vk) + '" target="_blank" rel="noopener" title="Открыть во ВКонтакте">Слушать на VK ↗</a>' : '') + '</div>' +
+      '</article>';
+    }).join("");
+    sectionNav = SECTION_CYCLE["#audio"];
+    app.innerHTML = '<div class="wrap layout audio-page">' + authorAsideHtml() +
+      '<main>' +
+        (all.length
+          ? '<div class="cards">' + cards + '</div>'
+          : '<div class="empty">Аудиозаписи скоро появятся.</div>') +
+      '</main>' +
+    '</div>' + sectionEdgeNavHtml();
+    bindSectionNav();
+    bindAudioPlayers();
+    bindAuthorAside();
+    stickAside();
+  }
+
+  /* Кастомный плеер: скрытый <audio> — источник звука, кнопка и полоса —
+     вид. Играет только один трек: запуск нового ставит паузу остальным.
+     Цель «нажали прослушивание» (не «открыли страницу») — на play. */
+  function bindAudioPlayers() {
+    app.querySelectorAll(".aplayer").forEach(function (pl) {
+      var audio = pl.querySelector("audio");
+      if (!audio) return;
+      var title = pl.getAttribute("data-title") || "";
+      var btn = pl.querySelector(".aplay");
+      var bar = pl.querySelector(".abar");
+      var prog = pl.querySelector(".aprog");
+      var time = pl.querySelector(".atime");
+      function showTime() {
+        var d = audio.duration;
+        time.textContent = fmtTime(audio.currentTime) + " / " +
+          (isFinite(d) && d ? fmtTime(d) : "–:––");
+      }
+      function setPlaying(on) {
+        pl.classList.toggle("playing", on);
+        btn.setAttribute("aria-label", (on ? "Пауза: " : "Слушать: ") + title);
+      }
+      btn.addEventListener("click", function () {
+        if (audio.paused) {
+          app.querySelectorAll(".aplayer audio").forEach(function (other) {
+            if (other !== audio) other.pause();
+          });
+          audio.play();
+          trackGoal("audio_play");
+        } else {
+          audio.pause();
+        }
+      });
+      audio.addEventListener("play", function () { setPlaying(true); });
+      audio.addEventListener("pause", function () { setPlaying(false); });
+      audio.addEventListener("ended", function () {
+        setPlaying(false);
+        audio.currentTime = 0;
+        prog.style.width = "0%";
+        showTime();
+      });
+      audio.addEventListener("timeupdate", function () {
+        if (isFinite(audio.duration) && audio.duration) {
+          prog.style.width = (audio.currentTime / audio.duration * 100) + "%";
+        }
+        showTime();
+      });
+      audio.addEventListener("loadedmetadata", showTime);
+      /* клик по полосе — перемотка (зона всей строки .abar — крупная тап-цель) */
+      bar.addEventListener("click", function (e) {
+        if (!isFinite(audio.duration) || !audio.duration) return;
+        var r = bar.getBoundingClientRect();
+        audio.currentTime = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)) * audio.duration;
+        showTime();
+      });
+    });
   }
 
   /* ── Маршрутизация по хешу ───────────────────────────── */
@@ -596,15 +969,24 @@
     var outgoingListKey = outgoingIsList ? listNav.q + "|" + listNav.genre + "|" + listNav.page : null;
     var outgoingScrollY = window.scrollY;
     var section = decodeURIComponent(h.split(/[/?]/)[0] || "") || "home";
-    /* Ушли со страницы стиха, не свайпнув, — подсказку больше не показываем */
-    if (h.indexOf("poem/") !== 0) dismissSwipeHint();
-    var nav = document.querySelectorAll("nav.main a");
+    /* Ушли со страницы стиха/видео, не свайпнув, — подсказку больше не показываем */
+    if (h.indexOf("poem/") !== 0 && h.indexOf("video/") !== 0) dismissSwipeHint();
+    var nav = document.querySelectorAll("nav.main a, nav.sections a");
     nav.forEach(function (a) {
       a.classList.toggle("active", section === a.getAttribute("href").slice(1));
     });
 
     if (h.indexOf("poem/") === 0) {
       renderPoem(h.slice(5));
+      window.scrollTo(0, 0);
+    } else if (h === "video") {
+      renderVideoList();
+      window.scrollTo(0, 0);
+    } else if (h === "audio") {
+      renderAudioList();
+      window.scrollTo(0, 0);
+    } else if (h.indexOf("video/") === 0) {
+      renderVideo(decodeURIComponent(h.slice(6)));
       window.scrollTo(0, 0);
     } else {
       /* «#home» — явный путь «на главную» (логотип): без фильтров
@@ -673,13 +1055,11 @@
   }
 
   /* ── Листание: стрелки на десктопе, свайпы на мобильных.
-     На странице стиха — соседние стихи, на главной — страницы списка. ── */
+     На страницах стихов и видео — соседние записи, на списках-разделах —
+     цикл разделов: Стихи → Аудио → Видео → по кругу. ── */
+  /* base в currentNav отличает листание видео от стихов (стрелки, свайпы) */
   function gotoPoem(p) {
-    if (p) location.hash = "#poem/" + p.id;
-  }
-  function gotoPage(n) {
-    if (n < 1 || n > listNav.pages || n === listNav.page) return;
-    location.hash = listHref(listNav.q, listNav.genre, n);
+    if (p) location.hash = (currentNav && currentNav.base ? currentNav.base : "#poem/") + p.id;
   }
   function typingTarget(el) {
     var tag = (el && el.tagName || "").toLowerCase();
@@ -693,11 +1073,11 @@
   }
   function navLeft() {
     if (currentNav) gotoPoem(currentNav.prev);
-    else if (listNav) gotoPage(listNav.page - 1);
+    else if (sectionNav) location.hash = sectionNav.prev;
   }
   function navRight() {
     if (currentNav) gotoPoem(currentNav.next);
-    else if (listNav) gotoPage(listNav.page + 1);
+    else if (sectionNav) location.hash = sectionNav.next;
   }
   document.addEventListener("keydown", function (e) {
     if (e.altKey || e.ctrlKey || e.metaKey || typingTarget(e.target) ||
@@ -721,9 +1101,10 @@
     if (!card || e.target.closest("a, button")) return;
     location.hash = card.getAttribute("data-href");
   });
-  /* ── Одноразовая подсказка «листайте свайпом» на странице стиха ──
-     Только сенсорные экраны; исчезает после первого свайпа, тапа по ней
-     или через 4 секунды; показывается один раз (localStorage). */
+  /* ── Одноразовая подсказка «листайте свайпом» на главной ──
+     Только сенсорные экраны; исчезает после первого свайпа или через
+     4 секунды; показывается один раз (localStorage), со страницы стиха
+     убрана — первый заход на сайт почти всегда начинается с главной. */
   var swipeHintEl = null;
   function dismissSwipeHint() {
     if (!swipeHintEl) return;
@@ -734,8 +1115,8 @@
   function maybeShowSwipeHint() {
     var seen = false;
     try { seen = localStorage.getItem("swipeHintSeen") === "1"; } catch (e) {}
-    if (seen || !currentNav || !(currentNav.prev || currentNav.next) ||
-        !(window.matchMedia && window.matchMedia("(pointer: coarse)").matches)) return;
+    /* только сенсорные экраны; один раз — до первого свайпа или ухода с главной */
+    if (seen || !(window.matchMedia && window.matchMedia("(pointer: coarse)").matches)) return;
     var el = document.createElement("div");
     el.className = "swipe-hint";
     el.innerHTML = '<span class="swipe-demo" aria-hidden="true"><span class="swipe-dot"></span></span>листайте свайпом';
@@ -765,7 +1146,7 @@
                Math.abs(e.touches[0].clientX - touchX));
   }, { passive: true });
   document.addEventListener("touchend", function (e) {
-    if ((!currentNav && !listNav) || !touchX) return;
+    if ((!currentNav && !sectionNav) || !touchX) return;
     var dx = e.changedTouches[0].clientX - touchX;
     var dy = e.changedTouches[0].clientY - touchY;
     touchX = 0;

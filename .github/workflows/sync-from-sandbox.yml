@@ -1,0 +1,75 @@
+name: sync-from-sandbox
+
+# Перенос контента из песочницы (poetry_site) в прод с учётом
+# особенностей прода. Запускается вручную (кнопка «В прод» в админке
+# или workflow_dispatch здесь).
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-from-sandbox
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Клонировать песочницу
+        uses: actions/checkout@v4
+        with:
+          repository: yakov-shakhov/poetry_site
+          ref: master
+          path: sandbox
+
+      - name: Перенести контент (без robots.txt, CNAME, admin.html)
+        run: |
+          set -e
+          # Контент и код сайта
+          rsync -a --delete sandbox/data/ data/
+          rsync -a --delete sandbox/assets/ assets/
+          cp sandbox/index.html index.html
+          # Скрипты нужны для генерации ниже
+          mkdir -p scripts
+          cp sandbox/scripts/generate_pages.py sandbox/scripts/check_data.js scripts/
+          # Админка живёт только в песочнице — из прода убрать
+          git rm -f --ignore-unmatch -q admin.html
+          rm -f admin.html
+
+      - name: Убрать noindex из index.html и проверить
+        run: |
+          set -e
+          # В песочнице index.html с noindex (защита github.io); в проде его быть не должно.
+          sed -i 's|<meta name="robots" content="noindex, nofollow" />||g; s|<meta name="robots" content="noindex, nofollow">||g; s|<meta name="robots"[^>]*noindex[^>]*>||g' index.html
+          if grep -i "noindex" index.html; then
+            echo "::error::noindex всё ещё в index.html — прерываю, прод не должен закрываться от поисковиков"
+            exit 1
+          fi
+          echo "noindex убран, index.html чист"
+
+      - name: Проверка данных
+        run: node scripts/check_data.js
+
+      - name: Перегенерация poem/ и sitemap.xml
+        run: |
+          set -e
+          rm -rf poem
+          python3 scripts/generate_pages.py
+          # robots.txt прода не трогаем: он остаётся с прошлого коммита
+
+      - name: Коммит и пуш
+        run: |
+          git config user.name "poetry-site-bot"
+          git config user.email "yakovshakhov@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "Изменений нет — прод уже актуален"
+          else
+            git commit -m "Синк из песочницы $(date -u +%Y-%m-%dT%H:%MZ) (workflow)"
+            git push
+          fi

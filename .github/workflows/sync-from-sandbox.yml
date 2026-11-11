@@ -30,9 +30,11 @@ jobs:
       - name: Перенести контент (без robots.txt, CNAME, admin.html)
         run: |
           set -e
-          # Контент и код сайта
+          # Контент и код сайта.
+          # assets/audio — mp3 живут только в репо прода (audio.js играет их
+          # по абсолютному адресу yakovshakhov.ru), exclude защищает их от --delete.
           rsync -a --delete sandbox/data/ data/
-          rsync -a --delete sandbox/assets/ assets/
+          rsync -a --delete --exclude '/audio/' sandbox/assets/ assets/
           cp sandbox/index.html index.html
           # Скрипты нужны для генерации ниже
           mkdir -p scripts
@@ -40,6 +42,10 @@ jobs:
           # Админка живёт только в песочнице — из прода убрать
           git rm -f --ignore-unmatch -q admin.html
           rm -f admin.html
+          # Клон песочницы со своим .git больше не нужен: иначе git add -A
+          # запишет каталог как встроенный репозиторий (гитлинк) и сломает
+          # checkout у Pages-сборки («No url found for submodule path 'sandbox'»)
+          rm -rf sandbox
 
       - name: Убрать noindex из index.html и проверить
         run: |
@@ -67,6 +73,11 @@ jobs:
           git config user.name "poetry-site-bot"
           git config user.email "yakovshakhov@users.noreply.github.com"
           git add -A
+          # Страховка: гитлинк-сабмодуль (mode 160000) в проде запрещён
+          if git ls-files -s | grep -q '^160000'; then
+            echo "::error::в индексе гитлинк-сабмодуль: $(git ls-files -s | grep '^160000')"
+            exit 1
+          fi
           if git diff --cached --quiet; then
             echo "Изменений нет — прод уже актуален"
           else

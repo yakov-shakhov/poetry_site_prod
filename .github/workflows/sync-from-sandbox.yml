@@ -31,10 +31,14 @@ jobs:
         run: |
           set -e
           # Контент и код сайта.
-          # assets/audio — mp3 живут только в репо прода (audio.js играет их
-          # по абсолютному адресу yakovshakhov.ru), exclude защищает их от --delete.
+          # assets/audio — особый случай: mp3 играются по абсолютному адресу
+          # yakovshakhov.ru. --exclude '/audio/' защищает prod-only mp3 от
+          # --delete (админка добавляет их в песочницу).
           rsync -a --delete sandbox/data/ data/
           rsync -a --delete --exclude '/audio/' sandbox/assets/ assets/
+          # mp3 из песочницы перенести ПОВЕРХ: новые/изменённые добавляются,
+          # старые prod-only файлы не удаляются
+          if [ -d sandbox/assets/audio ]; then rsync -a sandbox/assets/audio/ assets/audio/; fi
           cp sandbox/index.html index.html
           # Скрипты нужны для генерации ниже
           mkdir -p scripts

@@ -100,6 +100,153 @@ def make_snippet(text, limit=160):
     return cut.rstrip(" ,;:—-") + "…"
 
 
+# ── Книжное оформление текста стиха (по мотивам вёрстки book_8).
+#    Точный порт poemDecor() из app.js: подзаголовок «/ … /», эпиграф,
+#    подпись «дата, город», сноски «_____ / * …», стрелка «->». ──
+
+EPIGRAPH_TITLES = {"Есенину", "Хокку. Стилизация"}
+POEM_DATE_RE = re.compile(
+    r"^(\d{1,2}[-–—.]\d{1,2}[-–—.]\d{2,4}"
+    r"|\d{1,2}\.\d{1,2}\.\d{2,4}"
+    r"|(?:январ|феврал|март|апрел|ма|июн|июл|август|сентябр|октябр|ноябр|декабр)[а-я]*\s+\d{4}(?:\s*г\.?)?"
+    r"|(?:осень|весна|зима|лето)\s+\d{4})$", re.I)
+POEM_ORIG_RE = re.compile(r"„.+“\s+by\s+", re.I)
+
+
+def poem_looks_like_city(line):
+    if len(line.split()) > 7 or len(line) > 60:
+        return False
+    if re.search(r"[?!«»*…]", line) or re.search(r"\.{2}", line):
+        return False
+    if line.endswith((",", ";", ":")):
+        return False
+    if line.endswith(".") and not line.endswith(("г.", "St.")):
+        return False
+    if re.search(r"[а-яё]+-[а-яё]+", line):
+        return False
+    return True
+
+
+def poem_split_meta(text):
+    """Отделить от конца текста подпись: сноска, дата/город, оригинал."""
+    lines = re.sub(r"\s+$", "", str(text)).split("\n")
+    meta = []
+    while True:
+        i = len(lines)
+        while i > 0 and lines[i - 1].strip() == "":
+            i -= 1
+        j = i
+        while j > 0 and lines[j - 1].strip() != "":
+            j -= 1
+        block = [ln.strip() for ln in lines[j:i]]
+        if not block:
+            break
+        all_sig = all(POEM_DATE_RE.match(b) or poem_looks_like_city(b)
+                      for b in block)
+        if len(block) >= 2 and re.match(r"^_{3,}$", block[-2]) \
+                and block[-1].startswith("*"):
+            meta.insert(0, {"kind": "f", "lines": [block[-1][1:].strip()]})
+            block = block[:-2]
+            if block and all(POEM_DATE_RE.match(b) or poem_looks_like_city(b)
+                             for b in block):
+                meta.insert(0, {"kind": "s", "lines": block})
+        elif len(block) == 1 and POEM_ORIG_RE.search(block[0]):
+            meta.insert(0, {"kind": "o", "lines": block})
+        elif 1 <= len(block) <= 2 and all_sig:
+            meta.insert(0, {"kind": "s", "lines": block})
+        else:
+            break
+        lines = lines[:j]
+    return "\n".join(lines), meta
+
+
+def poem_decor(p):
+    """{sub_html, epi_html, body_html, meta_html} — как poemDecor() в app.js."""
+    body, meta = poem_split_meta(p["text"])
+    lines = [re.sub(r"[-–—]>", "→", ln) for ln in re.sub(r"\s+$", "", body).split("\n")]
+    sub = []
+    extra_foot = None
+    while lines and re.match(r"^/(.*)/$", lines[0].strip()):
+        s = re.sub(r"^/(.*)/$", r"\1", lines.pop(0).strip()).strip()
+        if re.match(r"^в соавторстве", s):
+            extra_foot = s          # «в соавторстве…» — сноска внизу, как в книге
+        else:
+            sub.append(s)
+    if extra_foot:
+        meta.append({"kind": "f", "lines": [extra_foot]})
+    epi = []
+    if p.get("title") in EPIGRAPH_TITLES:
+        while lines and not lines[0].strip():
+            lines.pop(0)
+        while lines and lines[0].strip():
+            epi.append(lines.pop(0))
+        while lines and not lines[0].strip():
+            lines.pop(0)
+    while lines and not lines[-1].strip():
+        lines.pop()
+    parts = []
+    for m in meta:
+        if m["kind"] == "f":
+            parts.append('<div class="poem-foot">' +
+                         esc("* " + m["lines"][0] + " (прим. авт.)") +
+                         "</div>")
+            continue
+        # дата-город — на своих строках (на сайте место экономить не нужно)
+        parts.append('<div class="poem-sig">' + esc("\n".join(m["lines"])) + "</div>")
+    return {
+        "sub_html": ('<div class="poem-sub">' + esc("\n".join(sub)) + "</div>")
+                    if sub else "",
+        "epi_html": ('<div class="poem-epigraph">' + esc("\n".join(epi)) + "</div>")
+                    if epi else "",
+        "body_html": esc("\n".join(lines)),
+        "meta_html": "".join(parts),
+    }
+
+
+# ── Стихи-«первострочники» (как в книге): название = первая строка,
+#    на странице стиха вместо названия — «* * *». Порт из app.js. ──
+
+FIRST_LINE_EXTRA = [
+    "Я с Дона, она с Волги", "Не может солнце быть луной",
+    "Иерархия Света, иерархия Тьмы", "Давай поучимся у Бога",
+    "От Примы до Рыбы...", "С неба снег будто",
+]
+
+
+def poem_norm_ft(t):
+    t = str(t).replace("ё", "е")
+    t = re.sub(r"[—–]", "-", t)
+    return re.sub(r"\s+", " ", t).strip().rstrip(".").lower()
+
+
+def first_line_ids(poems):
+    ids = {}
+    by_norm = {}
+    for p in poems:
+        by_norm.setdefault(poem_norm_ft(p["title"]), p)
+    for p in poems:
+        t = p["title"].rstrip()
+        if not re.search(r"(…|\.\.\.)$", t):
+            continue
+        base = poem_norm_ft(t)
+        lines = [ln for ln in p["text"].split("\n")
+                 if ln.strip() and not re.match(r"^/(.*)/$", ln.strip())]
+        if lines and poem_norm_ft(" ".join(lines[:2])).startswith(base):
+            ids[p["id"]] = 1
+    for t in FIRST_LINE_EXTRA:
+        p = by_norm.get(poem_norm_ft(t))
+        if p:
+            ids[p["id"]] = 1
+    return ids
+
+
+FIRST_LINE_IDS = {}
+
+
+def poem_is_first_line(p):
+    return p["id"] in FIRST_LINE_IDS
+
+
 def prerender(p, sorted_list, author, audios, videos):
     """Статическая копия разметки renderPoem() из app.js — чтобы страница
     не «мигала» при загрузке SPA. app.js заменит её на идентичную."""
@@ -126,6 +273,7 @@ def prerender(p, sorted_list, author, audios, videos):
 
     prev = sorted_list[idx - 1] if idx > 0 else None
     nxt = sorted_list[idx + 1] if idx < n - 1 else None
+    decor = poem_decor(p)
 
     def nav_link(x, arrow_left):
         label = esc(x["title"])
@@ -141,10 +289,13 @@ def prerender(p, sorted_list, author, audios, videos):
     html = '<div class="wrap page-center">' \
         '<article class="poem">' \
         '<a class="tag" href="' + esc(tag_href) + '">' + esc(genre) + "</a>" \
-        "<h1>" + esc(p["title"]) + "</h1>" \
+        "<h1>" + ("* * *" if poem_is_first_line(p) else esc(p["title"])) + "</h1>" \
         '<div class="meta"><span>' + esc(show_date(p.get("date"))) + "</span>" \
         '<span class="meta-pos">' + str(idx + 1) + " из " + str(n) + "</span></div>" \
-        '<pre class="text">' + esc(p["text"]) + "</pre>" \
+        + decor["sub_html"] + \
+        decor["epi_html"] + \
+        '<pre class="text">' + decor["body_html"] + "</pre>" + \
+        decor["meta_html"] + \
         '<div class="poem-sign">' + esc(author.get("name", "")) + "</div>" + \
         media_row + \
         '<div class="source-link">' \
@@ -250,6 +401,8 @@ def main():
 
     template = (ROOT / "index.html").read_text(encoding="utf-8")
     sorted_list = sorted(poems, key=lambda p: date_key(p.get("date")), reverse=True)
+    FIRST_LINE_IDS.clear()
+    FIRST_LINE_IDS.update(first_line_ids(poems))
 
     POEM_DIR.mkdir(exist_ok=True)
     for p in sorted_list:
